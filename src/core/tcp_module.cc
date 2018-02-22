@@ -25,6 +25,8 @@ int main(int argc, char *argv[])
 {
   MinetHandle mux, sock;
 
+  printf("\nRunning Module\n");
+
   MinetInit(MINET_TCP_MODULE);
 
   mux=MinetIsModuleInConfig(MINET_IP_MUX) ? MinetConnect(MINET_IP_MUX) : MINET_NOHANDLE;
