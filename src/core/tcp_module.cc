@@ -47,6 +47,7 @@ int main(int argc, char *argv[])
   MinetEvent event;
 
   while (MinetGetNextEvent(event)==0) {
+    printf("\nReceived\n");
     // if we received an unexpected type of event, print error
     if (event.eventtype!=MinetEvent::Dataflow 
 	|| event.direction!=MinetEvent::IN) {
