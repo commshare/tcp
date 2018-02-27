@@ -108,26 +108,28 @@ int main(int argc, char *argv[])
         ih.SetSourceIP(c.src);
         ih.SetDestIP(c.dest);
         ih.SetTotalLength(TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH);
-        ih.SetID(rand() % 10000);
-
         p_send.PushFrontHeader(ih);
 
         th.SetDestPort(c.destport, p_send);
         th.SetSourcePort(c.srcport, p_send);
-
-        th.SetSeqNum(seq_num+1, p_send);
-        th.SetAckNum(ack_num+1, p_send);
+        th.SetSeqNum(rand() % 1000, p_send);
+        th.SetAckNum(seq_num+1, p_send);
         th.SetWinSize(win_size, p_send);
+        th.SetHeaderLen(5, p_send);
+        th.SetChecksum(0);
         // th.SetHeaderLen(hlen, p);
         // th.SetUrgentPtr(urgptr, p);
         SET_SYN(flags);
         SET_ACK(flags);
         th.SetFlags(flags, p_send);
+        th.SetUrgentPtr(0, p_send);
+        th.RecomputeChecksum(p_send);
 
         p_send.PushBackHeader(th);
 
         cerr << "\nSENDING TCP Packet: IP Header is "<<ih<<" and ";
         cerr << "\nSENDING TCP Header is "<< th << " and ";
+        cerr << "Checksum is: " << (th.IsCorrectChecksum(p_send) ? "VALID" : "INVALID") << endl;
 
         MinetSend(mux, p_send);
 
