@@ -13,6 +13,7 @@
 #include "tcpstate.h"
 #include "sockint.h"
 #include "constate.h"
+#include "ip.h"
 
 #include <iostream>
 
@@ -66,6 +67,7 @@ int main(int argc, char *argv[])
   MinetHandle mux, sock;
   ConnectionList<TCPState> clist;
   TCPState state;
+
   state.SetState(LISTEN);
 
   MinetInit(MINET_TCP_MODULE);
@@ -144,9 +146,13 @@ int main(int argc, char *argv[])
       				cerr << "\nSYN RECEIVED\n";
    					SET_SYN(flags);
     				SET_ACK(flags);
-	      			formatAndSendPacket(c, mux, flags, rand() % 1000, seq_num+1, win_size, 5);
+
+    				unsigned int new_seq_num = rand() % 1000;
+
+	      			formatAndSendPacket(c, mux, flags, new_seq_num, seq_num+1, win_size, 5);
 			        state.SetState(SYN_RCVD);
-			        state.SetLastRecvd(ack_num + 1);
+			        state.SetLastRecvd(seq_num);
+			        state.SetLastSent(new_seq_num);
 			    }
 		    	break;
 		    }
@@ -158,10 +164,19 @@ int main(int argc, char *argv[])
 		    	}else{
    					SET_SYN(flags);
     				SET_ACK(flags);
-		    		formatAndSendPacket(c, mux, flags, ack_num, seq_num+1, win_size, 5);
+		    		formatAndSendPacket(c, mux, flags, state.GetLastSent(), state.GetLastRecvd()+1, win_size, 5);
 		    	}
 
 		    	break;
+		    }
+
+		    case SYN_SENT:{
+		    	if (IS_ACK(client_flags) && IS_SYN(client_flags)){
+		    		SET_ACK(flags);
+		    		formatAndSendPacket(c, mux, flags, ack_num, seq_num + 1, win_size, 5);
+		    		state.SetLastSent(ack_num);
+		    		state.SetLastRecvd(seq_num);
+		    	}
 		    }
 
 		    case ESTABLISHED: {
@@ -181,6 +196,23 @@ int main(int argc, char *argv[])
         SockRequestResponse s;
         MinetReceive(sock,s);
         cerr << "Received Socket Request:" << s << endl;
+
+        int type = 1;
+
+        if (type == 0){
+        	Connection c;
+        	c.protocol = IP_PROTO_TCP;
+        	c.src = IPAddress('10.10.44.92');
+        	c.dest = IPAddress('129.105.7.248');
+        	c.srcport = 5050;
+        	c.destport = 36991;
+
+        	unsigned char flags = 0;
+        	SET_SYN(flags);
+        	formatAndSendPacket(c, mux, flags, rand() % 1000, 0, win_size, 5);
+        	state.SetState(SYN_SENT);
+        }
+
       }
     }
   }
