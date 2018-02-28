@@ -24,16 +24,49 @@ using std::endl;
 using std::cerr;
 using std::string;
 
+void formatAndSendPacket(Connection c, MinetHandle mux, unsigned char flags, unsigned int ack_num, unsigned int seq_num, unsigned short win_size, unsigned int hdr_len){
+	Packet p_send;
+	IPHeader ih;
+	TCPHeader th;
+
+	ih.SetProtocol(c.protocol);
+	ih.SetSourceIP(c.src);
+	ih.SetDestIP(c.dest);
+    ih.SetTotalLength(TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH);
+    p_send.PushFrontHeader(ih);
+
+    th.SetDestPort(c.destport, p_send);
+    th.SetSourcePort(c.srcport, p_send);
+    th.SetSeqNum(ack_num, p_send);
+    th.SetAckNum(seq_num, p_send);
+    th.SetWinSize(win_size, p_send);
+    th.SetHeaderLen(hdr_len, p_send);
+    th.SetChecksum(0);
+    // th.SetUrgentPtr(urgptr, p);
+    th.SetFlags(flags, p_send);
+    th.SetUrgentPtr(0, p_send);
+    th.RecomputeChecksum(p_send);
+
+    p_send.PushBackHeader(th);
+
+    cerr << "\nSENDING TCP Packet: IP Header is "<<ih<<" and ";
+    cerr << "\nSENDING TCP Header is "<< th << " and ";
+    cerr << "Checksum is: " << (th.IsCorrectChecksum(p_send) ? "VALID" : "INVALID") << endl;
+
+    MinetSend(mux, p_send);
+}
+
 int main(int argc, char *argv[])
 {
-  MinetHandle mux, sock;
-  ConnectionList<TCPState> clist;
 
-  unsigned char flags = 0;
   unsigned char client_flags = 0;
   unsigned int ack_num = 0;
   unsigned int seq_num = 0;
   unsigned short win_size = 1000;
+  MinetHandle mux, sock;
+  ConnectionList<TCPState> clist;
+  TCPState state;
+  state.SetState(LISTEN);
 
   MinetInit(MINET_TCP_MODULE);
 
@@ -100,39 +133,48 @@ int main(int argc, char *argv[])
             cerr << "\nReceived Packet\n";
         }
 
-        Packet p_send;
-        IPHeader ih;
-        TCPHeader th;
+        cerr << "STATE is: " << state.GetState();
+        unsigned char flags = 0;
+        switch(state.GetState()){
 
-        ih.SetProtocol(c.protocol);
-        ih.SetSourceIP(c.src);
-        ih.SetDestIP(c.dest);
-        ih.SetTotalLength(TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH);
-        p_send.PushFrontHeader(ih);
+      		case LISTEN: {
+      			cerr << "Is Syn: " << IS_SYN(client_flags);
 
-        th.SetDestPort(c.destport, p_send);
-        th.SetSourcePort(c.srcport, p_send);
-        th.SetSeqNum(rand() % 1000, p_send);
-        th.SetAckNum(seq_num+1, p_send);
-        th.SetWinSize(win_size, p_send);
-        th.SetHeaderLen(5, p_send);
-        th.SetChecksum(0);
-        // th.SetHeaderLen(hlen, p);
-        // th.SetUrgentPtr(urgptr, p);
-        SET_SYN(flags);
-        SET_ACK(flags);
-        th.SetFlags(flags, p_send);
-        th.SetUrgentPtr(0, p_send);
-        th.RecomputeChecksum(p_send);
+      			if (IS_SYN(client_flags)){
+      				cerr << "\nSYN RECEIVED\n";
+   					SET_SYN(flags);
+    				SET_ACK(flags);
+	      			formatAndSendPacket(c, mux, flags, rand() % 1000, seq_num+1, win_size, 5);
+			        state.SetState(SYN_RCVD);
+			        state.SetLastRecvd(ack_num + 1);
+			    }
+		    	break;
+		    }
 
-        p_send.PushBackHeader(th);
+		    case SYN_RCVD: {
+		    	if (IS_ACK(client_flags)){
+		    		state.SetState(ESTABLISHED);
+		    		cerr << "\nCONNECTION ESTABLISHED\n";
+		    	}else{
+   					SET_SYN(flags);
+    				SET_ACK(flags);
+		    		formatAndSendPacket(c, mux, flags, ack_num, seq_num+1, win_size, 5);
+		    	}
 
-        cerr << "\nSENDING TCP Packet: IP Header is "<<ih<<" and ";
-        cerr << "\nSENDING TCP Header is "<< th << " and ";
-        cerr << "Checksum is: " << (th.IsCorrectChecksum(p_send) ? "VALID" : "INVALID") << endl;
+		    	break;
+		    }
 
-        MinetSend(mux, p_send);
+		    case ESTABLISHED: {
+		    	if (IS_FIN(client_flags)){
+		    		cerr << "\nFIN RECEIVED\n";
 
+    				SET_ACK(flags);
+    				formatAndSendPacket(c, mux, flags, rand() % 1000, seq_num+1, win_size, 5);
+		    	}
+		    }
+      	}
+
+        
       }
           //  Data from the Sockets layer above  //
       if (event.handle==sock) {
