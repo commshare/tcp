@@ -25,34 +25,34 @@ using std::endl;
 using std::cerr;
 using std::string;
 
-void formatAndSendPacket(Connection c, MinetHandle mux, unsigned char flags, unsigned int ack_num, unsigned int seq_num, unsigned short win_size, unsigned int hdr_len){
+void formatAndSendPacket(Connection c, MinetHandle mux, unsigned char flags, unsigned int seq_num, unsigned int ack_num, unsigned short win_size, unsigned int hdr_len){
 	Packet p_send;
-	IPHeader ih;
-	TCPHeader th;
+	IPHeader iph;
+	TCPHeader tcph;
 
-	ih.SetProtocol(c.protocol);
-	ih.SetSourceIP(c.src);
-	ih.SetDestIP(c.dest);
-    ih.SetTotalLength(TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH);
-    p_send.PushFrontHeader(ih);
+	iph.SetProtocol(c.protocol);
+	iph.SetSourceIP(c.src);
+	iph.SetDestIP(c.dest);
+    iph.SetTotalLength(TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH);
+    p_send.PushFrontHeader(iph);
 
-    th.SetDestPort(c.destport, p_send);
-    th.SetSourcePort(c.srcport, p_send);
-    th.SetSeqNum(ack_num, p_send);
-    th.SetAckNum(seq_num, p_send);
-    th.SetWinSize(win_size, p_send);
-    th.SetHeaderLen(hdr_len, p_send);
-    th.SetChecksum(0);
+    tcph.SetDestPort(c.destport, p_send);
+    tcph.SetSourcePort(c.srcport, p_send);
+    tcph.SetSeqNum(seq_num, p_send);
+    tcph.SetAckNum(ack_num, p_send);
+    tcph.SetWinSize(win_size, p_send);
+    tcph.SetHeaderLen(hdr_len, p_send);
+    tcph.SetChecksum(0);
     // th.SetUrgentPtr(urgptr, p);
-    th.SetFlags(flags, p_send);
-    th.SetUrgentPtr(0, p_send);
-    th.RecomputeChecksum(p_send);
+    tcph.SetFlags(flags, p_send);
+    tcph.SetUrgentPtr(0, p_send);
+    tcph.RecomputeChecksum(p_send);
 
-    p_send.PushBackHeader(th);
+    p_send.PushBackHeader(tcph);
 
-    cerr << "\nSENDING TCP Packet: IP Header is "<<ih<<" and ";
-    cerr << "\nSENDING TCP Header is "<< th << " and ";
-    cerr << "Checksum is: " << (th.IsCorrectChecksum(p_send) ? "VALID" : "INVALID") << endl;
+    cerr << "\nSENDING TCP Packet: IP Header is "<<iph<<" and ";
+    cerr << "\nSENDING TCP Header is "<< tcph << " and ";
+    cerr << "Checksum is: " << (tcph.IsCorrectChecksum(p_send) ? "VALID" : "INVALID") << endl;
 
     MinetSend(mux, p_send);
 }
@@ -67,8 +67,6 @@ int main(int argc, char *argv[])
   MinetHandle mux, sock;
   ConnectionList<TCPState> clist;
   TCPState state;
-
-  state.SetState(LISTEN);
 
   MinetInit(MINET_TCP_MODULE);
 
@@ -125,8 +123,8 @@ int main(int argc, char *argv[])
         tcph.GetDestPort(c.srcport);
         tcph.GetSourcePort(c.destport);
         tcph.GetFlags(client_flags);
-        tcph.GetSeqNum(seq_num);
-        tcph.GetAckNum(ack_num);
+        tcph.GetSeqNum(ack_num);
+        tcph.GetAckNum(seq_num);
         tcph.GetWinSize(win_size);
 
         ConnectionList<TCPState>::iterator cs = clist.FindMatching(c);
@@ -147,12 +145,12 @@ int main(int argc, char *argv[])
    					SET_SYN(flags);
     				SET_ACK(flags);
 
-    				unsigned int new_seq_num = rand() % 1000;
+    				unsigned int seq_num = rand() % 1000;
 
-	      			formatAndSendPacket(c, mux, flags, new_seq_num, seq_num+1, win_size, 5);
+	      			formatAndSendPacket(c, mux, flags, seq_num, ack_num + 1, win_size, 5);
 			        state.SetState(SYN_RCVD);
-			        state.SetLastRecvd(seq_num);
-			        state.SetLastSent(new_seq_num);
+			        state.SetLastRecvd(ack_num + 1);
+			        state.SetLastSent(seq_num);
 			    }
 		    	break;
 		    }
@@ -164,7 +162,7 @@ int main(int argc, char *argv[])
 		    	}else{
    					SET_SYN(flags);
     				SET_ACK(flags);
-		    		formatAndSendPacket(c, mux, flags, state.GetLastSent(), state.GetLastRecvd()+1, win_size, 5);
+		    		formatAndSendPacket(c, mux, flags, state.GetLastSent(), state.GetLastRecvd(), win_size, 5);
 		    	}
 
 		    	break;
@@ -172,11 +170,25 @@ int main(int argc, char *argv[])
 
 		    case SYN_SENT:{
 		    	if (IS_ACK(client_flags) && IS_SYN(client_flags)){
-		    		SET_ACK(flags);
-		    		formatAndSendPacket(c, mux, flags, ack_num, seq_num + 1, win_size, 5);
-		    		state.SetLastSent(ack_num);
-		    		state.SetLastRecvd(seq_num);
+		    		cerr << "Expecting: " << state.GetLastSent() << ", but got: " << seq_num;
+		    		if (state.GetLastSent() == seq_num){
+		    			SET_ACK(flags);
+		    			formatAndSendPacket(c, mux, flags, seq_num, ack_num + 1, win_size, 5);
+		    			state.SetLastSent(seq_num);
+		    			state.SetLastRecvd(ack_num + 1);
+		    			state.SetState(ESTABLISHED);
+		    			cerr << "\nCONNECTION ESTABLISHED\n";
+		    		}
 		    	}
+		    	else{
+		    		//resent SYN
+		    		cerr << "\nSomething Wrong, Resending SYN\n";
+		    		unsigned char flags = 0;
+       	 			SET_SYN(flags);
+		    		//formatAndSendPacket(c, mux, flags, state.GetLastSent() - 1, 0, win_size, 5);
+		    	}
+		    	
+		    	break;
 		    }
 
 		    case ESTABLISHED: {
@@ -184,7 +196,46 @@ int main(int argc, char *argv[])
 		    		cerr << "\nFIN RECEIVED\n";
 
     				SET_ACK(flags);
-    				formatAndSendPacket(c, mux, flags, rand() % 1000, seq_num+1, win_size, 5);
+    				formatAndSendPacket(c, mux, flags, rand() % 1000, ack_num+1, win_size, 5);
+		    	}
+
+		    	else if(IS_ACK(client_flags)){
+		    		cerr << "\nDATA RECEIVED\n";
+
+		    		SET_ACK(flags);
+
+		    		//ack this packet if we expected it
+
+		    		//cerr << "\nINCOMING SEQ NUM: " << ack_num << ", EXPECTED: " << state.GetLastAcked() << "\n";
+		    		if (ack_num == state.GetLastRecvd()){
+		    			cerr << "\nRECEIVED IN ORDER PACKET\n";
+
+		    			cerr << "\n\n\n" << p.GetPayload() << "\n\n\n";
+
+		    			unsigned short total_len;
+		    			ipl.GetTotalLength(total_len);
+
+    					unsigned char iph_len;
+    					ipl.GetHeaderLength(iph_len);
+
+    					unsigned char tcph_len;
+    					tcph.GetHeaderLen(tcph_len);
+
+    					ack_num += total_len - ((iph_len + tcph_len) * 4);
+
+		    			formatAndSendPacket(c, mux, flags, seq_num, ack_num, win_size, 5);
+		    			state.SetLastSent(seq_num);
+		    			state.SetLastRecvd(ack_num);
+
+		    		}else{
+		    			cerr << "\nRECEIVED OUT OF ORDER PACKET, RESEND LAST PACKET ACKED\n";
+
+		    			formatAndSendPacket(c, mux, flags, state.GetLastSent(), state.GetLastRecvd(), win_size, 5);
+		    		}
+
+		    	}
+		    	else{
+		    		cerr << "\nNEITHER ACK NOR FIN\n";
 		    	}
 		    }
       	}
@@ -197,20 +248,23 @@ int main(int argc, char *argv[])
         MinetReceive(sock,s);
         cerr << "Received Socket Request:" << s << endl;
 
-        int type = 1;
+        switch (s.type){
+        	case ACCEPT:{
+        		state.SetState(LISTEN);
+        		break;
+        	}
 
-        if (type == 0){
-        	Connection c;
-        	c.protocol = IP_PROTO_TCP;
-        	c.src = IPAddress('10.10.44.92');
-        	c.dest = IPAddress('129.105.7.248');
-        	c.srcport = 5050;
-        	c.destport = 36991;
-
-        	unsigned char flags = 0;
-        	SET_SYN(flags);
-        	formatAndSendPacket(c, mux, flags, rand() % 1000, 0, win_size, 5);
-        	state.SetState(SYN_SENT);
+        	case CONNECT:{
+        		unsigned char flags = 0;
+       	 		SET_SYN(flags);
+       	 		seq_num = rand() % 1000;
+       	 		for (int i = 0; i < 7; i++){
+        			formatAndSendPacket(s.connection, mux, flags, seq_num, 0, win_size, 5);
+        			state.SetLastSent(seq_num + 1);
+       	 		}
+       		 	state.SetState(SYN_SENT);
+        		break;
+        	}
         }
 
       }
