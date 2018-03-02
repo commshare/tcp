@@ -152,6 +152,10 @@ int main(int argc, char *argv[])
 			        state.SetLastRecvd(ack_num + 1);
 			        state.SetLastSent(seq_num);
 			    }
+			    if (IS_FIN(client_flags)){
+			    	SET_ACK(flags);
+    				formatAndSendPacket(c, mux, flags, rand() % 1000, ack_num+1, win_size, 5);
+			    }
 		    	break;
 		    }
 
@@ -179,7 +183,7 @@ int main(int argc, char *argv[])
 		    			state.SetState(ESTABLISHED);
 
 		    			SockRequestResponse repl;
-	   					repl.type=ACCEPT;
+	   					repl.type=WRITE;
 	   					repl.connection = c;
 	    				// buffer is zero bytes
 	    				repl.bytes=0;
@@ -209,8 +213,24 @@ int main(int argc, char *argv[])
 		    	if (IS_FIN(client_flags)){
 		    		cerr << "\nFIN RECEIVED\n";
 
+		    		//send ack and notify socket that we are closing connection
     				SET_ACK(flags);
     				formatAndSendPacket(c, mux, flags, rand() % 1000, ack_num+1, win_size, 5);
+
+    				Buffer empty;
+
+    				SockRequestResponse closeNotify;
+	   				closeNotify.type= WRITE;
+	   				closeNotify.connection = c;
+	    			// buffer is zero bytes
+	    			closeNotify.data = empty;
+	    			closeNotify.bytes=0;
+	    			closeNotify.error=EOK;
+
+	    			cerr << "\nACKING AND NOTIFYING SOCKET\n";
+
+	    			MinetSend(sock,closeNotify);
+	    			state.SetState(CLOSE_WAIT);
 		    	}
 
 		    	else if(IS_ACK(client_flags)){
@@ -269,6 +289,16 @@ int main(int argc, char *argv[])
 		    	}
 		    	break;
 		    }
+		    case LAST_ACK:{
+		    	if (seq_num == state.GetLastSent()){
+		    		cerr << "\nConnection Done!!\n";
+		    		state.SetState(LISTEN);
+		    	}
+		    	else{
+		    		cerr << "\nGot the wrong ack num, expected : " << state.GetLastSent() << ", but got: " << seq_num << "\n";
+		    	}
+		    	break;
+		    }
       	}
 
         
@@ -307,7 +337,6 @@ int main(int argc, char *argv[])
 
        		 	SockRequestResponse repl;
 	   			repl.type=STATUS;
-	    		repl.connection=s.connection;
 	    		// buffer is zero bytes
 	    		repl.bytes=0;
 	    		repl.error=EOK;
@@ -318,7 +347,35 @@ int main(int argc, char *argv[])
         		break;
         	}
         	case WRITE:{
+        		break;
+        	}
 
+        	case CLOSE:{
+        		cerr << "\nSOCKET CLOSE REQUEST\n";
+        		switch(state.GetState()){
+        			case CLOSE_WAIT: {
+        				unsigned char flags = 0;
+        				seq_num = rand() % 1000;
+        				SET_FIN(flags);
+
+        				cerr << "\nSENDING FIN TO REMOTE\n";   
+    					formatAndSendPacket(s.connection, mux, flags, seq_num, 0, win_size, 5);
+    					state.SetState(LAST_ACK);
+    					state.SetLastSent(seq_num + 1);
+        			}
+
+        			case ESTABLISHED:{
+        				unsigned char flags = 0;
+        				seq_num = rand() % 1000;
+        				SET_FIN(flags);
+
+        				cerr << "\nSENDING FIN TO REMOTE\n";   
+    					formatAndSendPacket(s.connection, mux, flags, seq_num, 0, win_size, 5);
+    					state.SetState(FIN_WAIT1);
+    					state.SetLastSent(seq_num + 1);
+        			}
+        		}
+        		break;
         	}
         }
 
