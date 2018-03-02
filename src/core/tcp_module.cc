@@ -177,6 +177,15 @@ int main(int argc, char *argv[])
 		    			state.SetLastSent(seq_num);
 		    			state.SetLastRecvd(ack_num + 1);
 		    			state.SetState(ESTABLISHED);
+
+		    			SockRequestResponse repl;
+	   					repl.type=ACCEPT;
+	   					repl.connection = c;
+	    				// buffer is zero bytes
+	    				repl.bytes=0;
+	    				repl.error=EOK;
+	    				MinetSend(sock,repl);
+
 		    			cerr << "\nCONNECTION ESTABLISHED\n";
 		    		}
 		    	}
@@ -192,6 +201,11 @@ int main(int argc, char *argv[])
 		    }
 
 		    case ESTABLISHED: {
+		    	if (IS_SYN(client_flags)){
+		    		cerr << "\nREJECTED SYN\n";
+		    		break;
+		    	}
+
 		    	if (IS_FIN(client_flags)){
 		    		cerr << "\nFIN RECEIVED\n";
 
@@ -222,10 +236,26 @@ int main(int argc, char *argv[])
     					tcph.GetHeaderLen(tcph_len);
 
     					ack_num += total_len - ((iph_len + tcph_len) * 4);
+    					
+
+    					unsigned short len;
+    					//len = tcph_len - TCP_HEADER_BASE_LENGTH;
+    					len = total_len - ((iph_len + tcph_len) * 4);
 
 		    			formatAndSendPacket(c, mux, flags, seq_num, ack_num, win_size, 5);
 		    			state.SetLastSent(seq_num);
 		    			state.SetLastRecvd(ack_num);
+
+		    			Buffer &data = p.GetPayload().ExtractFront(len);
+
+		    			SockRequestResponse write(WRITE,
+				    		c,
+				    		data,
+				    		len,
+				    		EOK);
+
+		    			MinetSend(sock,write);
+		    			cerr << "\nWRITING DATA TO SOCKET\n";
 
 		    		}else{
 		    			cerr << "\nRECEIVED OUT OF ORDER PACKET, RESEND LAST PACKET ACKED\n";
@@ -237,6 +267,7 @@ int main(int argc, char *argv[])
 		    	else{
 		    		cerr << "\nNEITHER ACK NOR FIN\n";
 		    	}
+		    	break;
 		    }
       	}
 
@@ -251,6 +282,15 @@ int main(int argc, char *argv[])
         switch (s.type){
         	case ACCEPT:{
         		state.SetState(LISTEN);
+
+        		SockRequestResponse repl;
+	   			repl.type=STATUS;
+	    		// buffer is zero bytes
+	    		repl.bytes=0;
+	    		repl.error=EOK;
+	    		MinetSend(sock,repl);
+
+	    		cerr << "\nSENDING CONNECTION OK STATUS\n";
         		break;
         	}
 
@@ -262,8 +302,23 @@ int main(int argc, char *argv[])
         			formatAndSendPacket(s.connection, mux, flags, seq_num, 0, win_size, 5);
         			state.SetLastSent(seq_num + 1);
        	 		}
+
        		 	state.SetState(SYN_SENT);
+
+       		 	SockRequestResponse repl;
+	   			repl.type=STATUS;
+	    		repl.connection=s.connection;
+	    		// buffer is zero bytes
+	    		repl.bytes=0;
+	    		repl.error=EOK;
+	    		MinetSend(sock,repl);
+
+                cerr << "\nSENDING SOCKET CONNECTION STATUS\n";        
+
         		break;
+        	}
+        	case WRITE:{
+
         	}
         }
 
