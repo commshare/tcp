@@ -139,7 +139,7 @@ int main(int argc, char *argv[])
         ConnectionList<TCPState>::iterator cs = clist.FindMatching(c);
 
         if (cs == clist.end()) {
-            cerr << "\nReceived Packet\n";
+            cerr << "\nReceived New Connection\n";
         }
 
         cerr << "STATE is: " << state.GetState();
@@ -196,6 +196,7 @@ int main(int argc, char *argv[])
 		    case SYN_SENT:{
 		    	if (IS_ACK(client_flags) && IS_SYN(client_flags)){
 		    		cerr << "Expecting: " << state.GetLastSent() << ", but got: " << seq_num;
+
 		    		if (state.GetLastSent() == seq_num){
 		    			SET_ACK(flags);
 		    			formatAndSendPacket(c, mux, flags, seq_num, ack_num + 1, win_size, 5, 0, empty);
@@ -223,7 +224,7 @@ int main(int argc, char *argv[])
 		    		cerr << "\nSomething Wrong, Resending SYN\n";
 		    		unsigned char flags = 0;
        	 			SET_SYN(flags);
-		    		//formatAndSendPacket(c, mux, flags, state.GetLastSent() - 1, 0, win_size, 5);
+		    		formatAndSendPacket(c, mux, flags, state.GetLastSent() - 1, 0, win_size, 5, 0, empty);
 		    	}
 		    	
 		    	break;
@@ -235,6 +236,7 @@ int main(int argc, char *argv[])
 		    		break;
 		    	}
 
+		    	
 		    	if (IS_FIN(client_flags)){
 		    		cerr << "\nFIN RECEIVED\n";
 
@@ -254,59 +256,70 @@ int main(int argc, char *argv[])
 
 	    			cerr << "\nACKING AND NOTIFYING SOCKET\n";
 
-	    			MinetSend(sock,closeNotify);
+	    			MinetSend(sock, closeNotify);
 	    			state.SetState(CLOSE_WAIT);
 		    	}
-
 		    	else if(IS_ACK(client_flags)){
 		    		cerr << "\nDATA RECEIVED\n";
 
-		    		SET_ACK(flags);
+		    		unsigned short total_len;
+		    		ipl.GetTotalLength(total_len);
 
-		    		//ack this packet if we expected it
+    				unsigned char iph_len;
+    				ipl.GetHeaderLength(iph_len);
 
-		    		//cerr << "\nINCOMING SEQ NUM: " << ack_num << ", EXPECTED: " << state.GetLastAcked() << "\n";
-		    		if (ack_num == state.GetLastRecvd()){
-		    			cerr << "\nRECEIVED IN ORDER PACKET\n";
+    				unsigned char tcph_len;
+    				tcph.GetHeaderLen(tcph_len);
 
-		    			cerr << "\n\n\n" << p.GetPayload() << "\n\n\n";
+    				unsigned short len;
+    				//len = tcph_len - TCP_HEADER_BASE_LENGTH;
+    				len = total_len - ((iph_len + tcph_len) * 4);
+    				cerr << "This is the length: " << len;
 
-		    			unsigned short total_len;
-		    			ipl.GetTotalLength(total_len);
+			    	cerr << "\n\n\n" << p.GetPayload() << "\n\n\n";
 
-    					unsigned char iph_len;
-    					ipl.GetHeaderLength(iph_len);
+	    			cerr << "\nExpected: " << state.GetLastSent();
+	    			cerr << "\nLength of response: " << len;
 
-    					unsigned char tcph_len;
-    					tcph.GetHeaderLen(tcph_len);
+    				//if this packet has data, send an ack
+    				if (len > 0){
+	    				SET_ACK(flags);
 
-    					ack_num += total_len - ((iph_len + tcph_len) * 4);
-    					
+			    		//ack this packet if we expected it
 
-    					unsigned short len;
-    					//len = tcph_len - TCP_HEADER_BASE_LENGTH;
-    					len = total_len - ((iph_len + tcph_len) * 4);
+			    		cerr << "\nINCOMING SEQ NUM: " << ack_num << ", EXPECTED: " << state.GetLastRecvd() << "\n";
+			    		if (ack_num == state.GetLastRecvd()){
+			    			cerr << "\nRECEIVED IN ORDER PACKET\n";
 
-		    			formatAndSendPacket(c, mux, flags, seq_num, ack_num, win_size, 5, 0, empty);
-		    			state.SetLastSent(seq_num);
-		    			state.SetLastRecvd(ack_num);
+			    			ack_num += len;
 
-		    			Buffer &data = p.GetPayload().ExtractFront(len);
+			    			formatAndSendPacket(c, mux, flags, seq_num, ack_num, win_size, 5, 0, empty);
+			    			state.SetLastSent(seq_num);
+			    			state.SetLastRecvd(ack_num);
 
-		    			SockRequestResponse write(WRITE,
-				    		c,
-				    		data,
-				    		len,
-				    		EOK);
+			    			Buffer &data = p.GetPayload().ExtractFront(len);
 
-		    			MinetSend(sock,write);
-		    			cerr << "\nWRITING DATA TO SOCKET\n";
+			    			SockRequestResponse write(WRITE,
+					    		c,
+					    		data,
+					    		len,
+					    		EOK);
 
-		    		}else{
-		    			cerr << "\nRECEIVED OUT OF ORDER PACKET, RESEND LAST PACKET ACKED\n";
+			    			MinetSend(sock,write);
+			    			cerr << "\nWRITING DATA TO SOCKET\n";
 
-		    			formatAndSendPacket(c, mux, flags, state.GetLastSent(), state.GetLastRecvd(), win_size, 5, 0, empty);
-		    		}
+			    		}else{
+			    			cerr << "\nRECEIVED OUT OF ORDER PACKET, RESEND LAST PACKET ACKED\n";
+
+			    			formatAndSendPacket(c, mux, flags, state.GetLastSent(), state.GetLastRecvd(), win_size, 5, 0, empty);
+			    		}
+    				}
+    				//this packet has no data so it has is an ack
+    				else{
+
+    				}
+
+		    		
 
 		    	}
 		    	else{
@@ -323,6 +336,10 @@ int main(int argc, char *argv[])
 		    		cerr << "\nGot the wrong ack num, expected : " << state.GetLastSent() << ", but got: " << seq_num << "\n";
 		    	}
 		    	break;
+		    }
+		    case CLOSE_WAIT:{
+		    	cerr << "\nSENDING FIN TO REMOTE\n";   
+    			formatAndSendPacket(c, mux, flags, seq_num, 0, win_size, 5, 0, empty);
 		    }
       	}
 
@@ -373,6 +390,7 @@ int main(int argc, char *argv[])
         	}
         	case WRITE:{
         		cerr << "\nGot Write Request\n";
+        		cerr << state.GetState();
         		if (state.GetState() == ESTABLISHED){
 
         			unsigned data_len = s.data.GetSize();
@@ -380,11 +398,18 @@ int main(int argc, char *argv[])
         			// create the payload of the packet
 	   				Buffer &data = s.data.ExtractFront(data_len);
         			unsigned char flags = 0;
-       	 			SET_SYN(flags);
+       	 			SET_ACK(flags);
        	 			SET_PSH(flags);
-        			formatAndSendPacket(s.connection, mux, flags, seq_num, ack_num+1, win_size, 5, data_len, data);
-        			state.SetLastSent(ack_num + data_len);
+        			formatAndSendPacket(s.connection, mux, flags, state.GetLastSent(), state.GetLastRecvd(), win_size, 5, data_len, data);
+        			state.SetLastSent(seq_num + data_len);
         			cerr << "\nSending Data\n";
+
+        			SockRequestResponse repl;
+	   				repl.type=STATUS;
+	    			// buffer is zero bytes
+	    			repl.bytes=data_len;
+	    			repl.error=EOK;
+	    			MinetSend(sock,repl);
         		}
         		break;
         	}
