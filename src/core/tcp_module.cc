@@ -163,6 +163,8 @@ int main(int argc, char *argv[])
 			        state.SetLastRecvd(ack_num + 1);
 			        state.SetLastSent(seq_num);
 			    }
+
+			    //this is so that incorrectly handled fins from earlier are ignored
 			    if (IS_FIN(client_flags)){
 			    	SET_ACK(flags);
     				formatAndSendPacket(c, mux, flags, rand() % 1000, ack_num+1, win_size, 5, 0, empty);
@@ -171,6 +173,7 @@ int main(int argc, char *argv[])
 		    }
 
 		    case SYN_RCVD: {
+		    	//wait for an ack after sending syn, if we get something else resend the syn
 		    	if (IS_ACK(client_flags)){
 		    		state.SetState(ESTABLISHED);
 
@@ -199,6 +202,7 @@ int main(int argc, char *argv[])
 		    	if (IS_ACK(client_flags) && IS_SYN(client_flags)){
 		    		cerr << "Expecting: " << state.GetLastSent() << ", but got: " << seq_num;
 
+		    		//if we get the correct syn ack, then we send an ack and establish the connection
 		    		if (state.GetLastSent() == seq_num){
 		    			SET_ACK(flags);
 		    			formatAndSendPacket(c, mux, flags, seq_num, ack_num + 1, win_size, 5, 0, empty);
@@ -235,12 +239,9 @@ int main(int argc, char *argv[])
 		    }
 
 		    case ESTABLISHED: {
-		    	if (IS_SYN(client_flags)){
-		    		cerr << "\nREJECTED SYN\n";
-		    		break;
-		    	}
+		    	//resend our ack if we get a syn ack
 
-		    	
+		    	//handle fin segment
 		    	if (IS_FIN(client_flags)){
 		    		cerr << "\nFIN RECEIVED\n";
 
@@ -255,7 +256,7 @@ int main(int argc, char *argv[])
 	   				closeNotify.connection = c;
 	    			// buffer is zero bytes
 	    			closeNotify.data = empty_data;
-	    			closeNotify.bytes=0;
+	    			closeNotify.bytes= 0;
 	    			closeNotify.error=EOK;
 
 	    			cerr << "\nACKING AND NOTIFYING SOCKET\n";
@@ -318,6 +319,7 @@ int main(int argc, char *argv[])
 			    			formatAndSendPacket(c, mux, flags, state.GetLastSent(), state.GetLastRecvd(), win_size, 5, 0, empty);
 			    		}
     				}
+
     				//this packet has no data so it has is an ack
     				else{
     					cerr << "\nRECEIVED ACK\n";
@@ -379,7 +381,8 @@ int main(int argc, char *argv[])
         		unsigned char flags = 0;
        	 		SET_SYN(flags);
        	 		seq_num = rand() % 1000;
-       	 		for (int i = 0; i < 7; i++){
+       	 		for (int i = 0; i < 2; i++){
+       	 			sleep(2);
         			formatAndSendPacket(s.connection, mux, flags, seq_num, 0, win_size, 5, 0, empty);
         			state.SetLastSent(seq_num + 1);
        	 		}
@@ -413,7 +416,7 @@ int main(int argc, char *argv[])
         				bytesSent -= bytesinFlight - state.rwnd;
         			}
 
-        			// create the payload of the packet
+        			// create the payload of the packet using the first n bytes of write request
 	   				state.SendBuffer.AddBack(s.data.ExtractFront(bytesSent));
 
         			unsigned char flags = 0;
@@ -448,19 +451,27 @@ int main(int argc, char *argv[])
     					state.SetLastSent(seq_num + 1);
         			}
 
-        			case ESTABLISHED:{
-        				unsigned char flags = 0;
-        				seq_num = rand() % 1000;
-        				SET_FIN(flags);
+    				case ESTABLISHED:{
+    					unsigned char flags = 0;
+    					seq_num = rand() % 1000;
+    					SET_FIN(flags);
 
-        				cerr << "\nSENDING FIN TO REMOTE\n";   
-    					formatAndSendPacket(s.connection, mux, flags, seq_num, 0, win_size, 5, 0, empty);
-    					state.SetState(FIN_WAIT1);
-    					state.SetLastSent(seq_num + 1);
-        			}
-        		}
-        		break;
-        	}
+    					cerr << "\nSENDING FIN TO REMOTE\n";   
+						formatAndSendPacket(s.connection, mux, flags, seq_num, 0, win_size, 5, 0, empty);
+						state.SetState(FIN_WAIT1);
+						state.SetLastSent(seq_num + 1);
+    				}
+    				break;
+    			}
+    		}
+    		case FORWARD:{
+    			SockRequestResponse repl;
+   				repl.type=STATUS;
+    			// buffer is zero bytes
+    			repl.bytes=0;
+    			repl.error=EOK;
+    			MinetSend(sock,repl);
+    		}
         }
 
       }
