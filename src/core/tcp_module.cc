@@ -31,8 +31,9 @@ void formatAndSendPacket(Connection c, MinetHandle mux, unsigned char flags, uns
 	IPHeader iph;
 	TCPHeader tcph;
 
+	//send the end of the buffer
 	if (data_len != 0){
-		Packet p(data);
+		Packet p(data.ExtractBack(data_len));
 		p_send = p;
 		cerr << "\nPayload: " << p.GetPayload();
 	}
@@ -76,6 +77,7 @@ int main(int argc, char *argv[])
   MinetHandle mux, sock;
   ConnectionList<TCPState> clist;
   TCPState state;
+  state.rwnd = 1000;
 
   MinetInit(MINET_TCP_MODULE);
 
@@ -202,6 +204,8 @@ int main(int argc, char *argv[])
 		    			formatAndSendPacket(c, mux, flags, seq_num, ack_num + 1, win_size, 5, 0, empty);
 		    			state.SetLastSent(seq_num);
 		    			state.SetLastRecvd(ack_num + 1);
+		    			state.SetLastAcked(seq_num+1);
+
 		    			state.SetState(ESTABLISHED);
 
 		    			SockRequestResponse notif;
@@ -316,7 +320,12 @@ int main(int argc, char *argv[])
     				}
     				//this packet has no data so it has is an ack
     				else{
+    					cerr << "\nRECEIVED ACK\n";
 
+    					//erase all bytes between last ack and new ack
+    					cerr << "\n" << seq_num << " " << state.GetLastAcked() << " bytes removed from buffer" << "\n";
+    					state.SendBuffer.Erase(0, seq_num - state.GetLastAcked());
+    					state.SetLastAcked(seq_num+1);
     				}
 
 		    		
@@ -391,23 +400,34 @@ int main(int argc, char *argv[])
         	case WRITE:{
         		cerr << "\nGot Write Request\n";
         		cerr << state.GetState();
+
         		if (state.GetState() == ESTABLISHED){
 
         			unsigned data_len = s.data.GetSize();
 
+        			unsigned bytesinFlight = (state.GetLastSent() + data_len) - state.GetLastAcked();
+        			unsigned bytesSent = data_len;
+
+        			//if sending all the data will put us over receive window, only send the number of bytes to completely fill the window
+        			if (bytesinFlight > state.rwnd){
+        				bytesSent -= bytesinFlight - state.rwnd;
+        			}
+
         			// create the payload of the packet
-	   				Buffer &data = s.data.ExtractFront(data_len);
+	   				state.SendBuffer.AddBack(s.data.ExtractFront(bytesSent));
+
         			unsigned char flags = 0;
        	 			SET_ACK(flags);
        	 			SET_PSH(flags);
-        			formatAndSendPacket(s.connection, mux, flags, state.GetLastSent(), state.GetLastRecvd(), win_size, 5, data_len, data);
-        			state.SetLastSent(seq_num + data_len);
+
+        			formatAndSendPacket(s.connection, mux, flags, state.GetLastSent(), state.GetLastRecvd(), win_size, 5, bytesSent, state.SendBuffer);
+        			state.SetLastSent(state.GetLastSent() + data_len);
         			cerr << "\nSending Data\n";
 
         			SockRequestResponse repl;
 	   				repl.type=STATUS;
 	    			// buffer is zero bytes
-	    			repl.bytes=data_len;
+	    			repl.bytes=bytesSent;
 	    			repl.error=EOK;
 	    			MinetSend(sock,repl);
         		}
