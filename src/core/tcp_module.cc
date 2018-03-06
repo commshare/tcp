@@ -390,6 +390,30 @@ int main(int argc, char *argv[])
 		    	}
 		    	break;
 		    }
+			case FIN_WAIT1:{
+                cerr << "\n\nSTATE SHOULD BE 8 FIN_WAIT1 ENTERED\n\n";
+                if(IS_ACK(client_flags))  {
+                    cerr << "\nRECEIVED FIN IN FINWAIT1...GOING TO FIN_WAIT2\n";
+                    state.SetState(FIN_WAIT2);
+                }
+                else if(IS_FIN(client_flags)){
+                    cerr << "\nRECEIVED ACK IN FINWAIT1...SENDING ACK\n";
+                    state.SetState(TIME_WAIT);
+                    SET_ACK(flags);
+                    formatAndSendPacket(c, mux, flags, seq_num, ack_num, win_size, 5, 0, empty);
+                }
+
+            }
+            case FIN_WAIT2:{
+                cerr << "\n\nSTATE SHOULD BE 11 FIN_WAIT2 ENTERED\n\n"; 
+                if(IS_FIN(client_flags)){
+                    cerr << "\nRECEIVED FIN IN FIN_WAIT2...SENDING ACK\n";
+                    SET_ACK(flags);
+                    formatAndSendPacket(c, mux, flags, seq_num, ack_num+1, win_size, 5, 0, empty);
+                    state.SetState(TIME_WAIT);
+                }
+
+            }
 		    case LAST_ACK:{
 		    	if (seq_num == connIter->state.GetLastSent()){
 		    		cerr << "\nConnection Done!!\n";
@@ -402,6 +426,12 @@ int main(int argc, char *argv[])
 		    	}
 		    	break;
 		    }
+			case TIME_WAIT:{
+		    	cerr << "\n\nTIME WAIT\n\n";   
+    			//2 MSL wait
+                Time t = Time(2*MSL_TIME_SECS);
+		    }
+        
       	}
 
         
@@ -550,15 +580,6 @@ int main(int argc, char *argv[])
     					connIter->state.SetState(CLOSED);
     				}
     			}
-    		}
-    		case FORWARD:{
-    			SockRequestResponse repl;
-   				repl.type=STATUS;
-    			// buffer is zero bytes
-    			repl.bytes=0;
-    			repl.error=EOK;
-    			MinetSend(sock,repl);
-    			break;
     		}
         }
 
