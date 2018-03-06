@@ -132,6 +132,10 @@ int main(int argc, char *argv[])
 					formatAndSendPacket(cMapping->connection, mux, flags, cMapping->state.GetLastAcked(), cMapping->state.GetLastRecvd(), cMapping->state.rwnd, 5, cMapping->state.SendBuffer.GetSize(), cMapping->state.SendBuffer);
 					break;
 				}
+				else if (cMapping->state.GetState() == TIME_WAIT){
+					cMapping->state.SetState(CLOSED);
+					cerr << "\nTime wait timed out, Closing Connection\n";
+				}
 			}
 			else{
 				//decrement timeout remaining
@@ -390,30 +394,41 @@ int main(int argc, char *argv[])
 		    	}
 		    	break;
 		    }
-			case FIN_WAIT1:{
-                cerr << "\n\nSTATE SHOULD BE 8 FIN_WAIT1 ENTERED\n\n";
-                if(IS_ACK(client_flags))  {
-                    cerr << "\nRECEIVED FIN IN FINWAIT1...GOING TO FIN_WAIT2\n";
-                    state.SetState(FIN_WAIT2);
-                }
-                else if(IS_FIN(client_flags)){
-                    cerr << "\nRECEIVED ACK IN FINWAIT1...SENDING ACK\n";
-                    state.SetState(TIME_WAIT);
-                    SET_ACK(flags);
-                    formatAndSendPacket(c, mux, flags, seq_num, ack_num, win_size, 5, 0, empty);
-                }
+		    case CLOSE_WAIT:{
+		    	cerr << "\nSENDING FIN TO REMOTE\n";
+		    	SET_FIN(flags);
+    			formatAndSendPacket(c, mux, flags, seq_num, 0, win_size, 5, 0, empty);
+		    }
 
-            }
-            case FIN_WAIT2:{
-                cerr << "\n\nSTATE SHOULD BE 11 FIN_WAIT2 ENTERED\n\n"; 
-                if(IS_FIN(client_flags)){
-                    cerr << "\nRECEIVED FIN IN FIN_WAIT2...SENDING ACK\n";
-                    SET_ACK(flags);
-                    formatAndSendPacket(c, mux, flags, seq_num, ack_num+1, win_size, 5, 0, empty);
-                    state.SetState(TIME_WAIT);
-                }
+		    case FIN_WAIT1:{
+		    	if (IS_ACK(recv_flags)){
+		    		cerr << "\nEntering FINWAIT2\n";
+		    		connIter->state.SetState(FIN_WAIT2);
+		    	}
 
-            }
+		    	if (IS_FIN(recv_flags)){
+		    		cerr << "\nEntering TIMEWAIT\n";
+		    		SET_ACK(flags);
+		    		formatAndSendPacket(c, mux, flags, seq_num, ack_num + 1, win_size, 5, 0, empty);
+		    		connIter->state.SetState(TIME_WAIT);
+					connIter->timeout = 1;
+					connIter->bTmrActive = true;
+		    	}
+		    }
+
+		    case FIN_WAIT2:{
+		    	if (IS_FIN(recv_flags)){
+		    		cerr << "\nEntering TIMEWAIT\n";
+		    		SET_ACK(flags);
+		    		formatAndSendPacket(c, mux, flags, seq_num, ack_num + 1, win_size, 5, 0, empty);
+		    		connIter->state.SetState(TIME_WAIT);
+		    		connIter->timeout = 1;
+					connIter->bTmrActive = true;
+		    	}
+		    }
+		    case CLOSED:{
+		    	cerr << "\nThis connnection is closed\n";
+		    }
 		    case LAST_ACK:{
 		    	if (seq_num == connIter->state.GetLastSent()){
 		    		cerr << "\nConnection Done!!\n";
@@ -425,11 +440,6 @@ int main(int argc, char *argv[])
 		    		connIter->state.SetState(CLOSE);
 		    	}
 		    	break;
-		    }
-			case TIME_WAIT:{
-		    	cerr << "\n\nTIME WAIT\n\n";   
-    			//2 MSL wait
-                Time t = Time(2*MSL_TIME_SECS);
 		    }
         
       	}
