@@ -67,17 +67,17 @@ void formatAndSendPacket(Connection c, MinetHandle mux, unsigned char flags, uns
 
 int main(int argc, char *argv[])
 {
-
-  unsigned char client_flags = 0;
-  unsigned int ack_num = 0;
-  unsigned int seq_num = 0;
-  unsigned short win_size = 1000;
+  double TIMEOUT_LEN = 2;
+  unsigned char recv_flags = 0;
+  unsigned int ack_num;
+  unsigned int seq_num;
+  short unsigned int win_size;
   Buffer& empty = *(new Buffer());
 
   MinetHandle mux, sock;
-  ConnectionList<TCPState> clist;
-  //state.rwnd = 1000;
-  double timeout = -1;
+  ConnectionList<TCPState> c_list;
+
+  double min_timeout = -1;
 
   MinetInit(MINET_TCP_MODULE);
 
@@ -100,8 +100,57 @@ int main(int argc, char *argv[])
 
   MinetEvent event;
 
-  while (MinetGetNextEvent(event,timeout)==0) {
+  Time prevTime;
+  prevTime.SetToCurrentTime();
+
+  while (MinetGetNextEvent(event, min_timeout)==0) {
     printf("\nReceived\n");
+
+     //update timeouts for each connection after minet event
+      Time newTime;
+      newTime.SetToCurrentTime();
+
+      double elapsedTime = double(newTime) - double(prevTime);
+      prevTime = newTime;
+
+      cerr << "\nElapse Time: " << elapsedTime;
+
+      ConnectionList<TCPState>::iterator cMapping = c_list.begin();
+
+      while (cMapping != c_list.end()){
+      	if (cMapping->bTmrActive){
+      		cerr << "\nActive Timer\n";
+			if ((double(cMapping->timeout) - elapsedTime) <= 0){
+				//we have timed out
+				cerr << "\nConnection Timed out\n";
+				cMapping->bTmrActive = false;
+				unsigned char flags = 0;
+				if (cMapping->state.GetState() == ESTABLISHED){
+					//send entire buffer
+					SET_ACK(flags);
+					SET_PSH(flags);
+					formatAndSendPacket(cMapping->connection, mux, flags, cMapping->state.GetLastAcked(), cMapping->state.GetLastRecvd(), cMapping->state.rwnd, 5, cMapping->state.SendBuffer.GetSize(), cMapping->state.SendBuffer);
+					break;
+				}
+			}
+			else{
+				//decrement timeout remaining
+				cMapping->timeout = Time(double(cMapping->timeout) - elapsedTime);
+			}
+      	}
+      	cMapping++;
+      }
+
+      //make minet timeout equal to the smallest timeout of our connections
+      if (c_list.FindEarliest() == c_list.end()){
+      	min_timeout = -1;
+      }
+      else{
+      	min_timeout = c_list.FindEarliest()->timeout;
+      }
+
+      cerr << "\nTimeout: " << min_timeout << "\n";
+
     // if we received an unexpected type of event, print error
     if (event.eventtype!=MinetEvent::Dataflow 
 	|| event.direction!=MinetEvent::IN) {
@@ -110,6 +159,7 @@ int main(int argc, char *argv[])
     } else {
       cerr << "invalid event from Minet" << endl;
       //  Data from the IP layer below  //
+
       if (event.handle==mux) {
         Packet p;
         MinetReceive(mux,p);
@@ -133,16 +183,20 @@ int main(int argc, char *argv[])
         c.protocol = IP_PROTO_TCP;
         tcph.GetDestPort(c.srcport);
         tcph.GetSourcePort(c.destport);
-        tcph.GetFlags(client_flags);
+        tcph.GetFlags(recv_flags);
         tcph.GetSeqNum(ack_num);
         tcph.GetAckNum(seq_num);
         tcph.GetWinSize(win_size);
 
-        ConnectionList<TCPState>::iterator connIter = clist.FindMatching(c);
+        ConnectionList<TCPState>::iterator connIter = c_list.FindMatching(c);
 
-        if (connIter == clist.end()) {
+        if (connIter == c_list.end()) {
             cerr << "\nNo matching connection found\n";
-
+            if (IS_FIN(recv_flags)){
+            	unsigned char flags = 0;
+			    SET_ACK(flags);
+    			formatAndSendPacket(c, mux, flags, rand() % 1000, ack_num+1, win_size, 5, 0, empty);
+			}
         }
 
         cerr << "STATE is: " << connIter->state.GetState();
@@ -150,9 +204,9 @@ int main(int argc, char *argv[])
         switch(connIter->state.GetState()){
 
       		case LISTEN: {
-      			cerr << "Is Syn: " << IS_SYN(client_flags);
+      			cerr << "Is Syn: " << IS_SYN(recv_flags);
 
-      			if (IS_SYN(client_flags)){
+      			if (IS_SYN(recv_flags)){
       				cerr << "\nSYN RECEIVED\n";
    					SET_SYN(flags);
     				SET_ACK(flags);
@@ -164,7 +218,7 @@ int main(int argc, char *argv[])
 			    }
 
 			    //this is so that incorrectly handled fins from earlier are ignored
-			    if (IS_FIN(client_flags)){
+			    if (IS_FIN(recv_flags)){
 			    	SET_ACK(flags);
     				formatAndSendPacket(c, mux, flags, rand() % 1000, ack_num+1, win_size, 5, 0, empty);
 			    }
@@ -173,10 +227,12 @@ int main(int argc, char *argv[])
 
 		    case SYN_RCVD: {
 		    	//wait for an ack after revieving syn, if we get something else resend the syn
-		    	if (IS_ACK(client_flags)){
+		    	if (IS_ACK(recv_flags)){
 		    		connIter->state.SetState(ESTABLISHED);
 
 		    		Buffer empty_data;
+
+		 			//notify socket of new connection
 
 		    		SockRequestResponse notif;
 	   				notif.type=WRITE;
@@ -191,26 +247,27 @@ int main(int argc, char *argv[])
 		    	}else{
    					SET_SYN(flags);
     				SET_ACK(flags);
-		    		formatAndSendPacket(c, mux, flags, connIter->state.GetLastSent(), connIter->state.GetLastRecvd(), win_size, 5, 0, empty);
+		    		formatAndSendPacket(c, mux, flags, connIter->state.GetLastSent(), connIter->state.GetLastRecvd(), connIter->state.rwnd, 5, 0, empty);
 		    	}
 
 		    	break;
 		    }
 
 		    case SYN_SENT:{
-		    	if (IS_ACK(client_flags) && IS_SYN(client_flags)){
+		    	if (IS_ACK(recv_flags) && IS_SYN(recv_flags)){
 		    		cerr << "Expecting: " << connIter->state.GetLastSent() << ", but got: " << seq_num;
 
 		    		//if we get the correct syn ack, then we send an ack and establish the connection
 		    		if (connIter->state.GetLastSent() == seq_num){
 		    			SET_ACK(flags);
-		    			formatAndSendPacket(c, mux, flags, seq_num, ack_num + 1, win_size, 5, 0, empty);
+		    			formatAndSendPacket(c, mux, flags, seq_num, ack_num + 1, connIter->state.rwnd, 5, 0, empty);
 		    			connIter->state.SetLastSent(seq_num);
 		    			connIter->state.SetLastRecvd(ack_num + 1);
 		    			connIter->state.SetLastAcked(seq_num + 1);
 
 		    			connIter->state.SetState(ESTABLISHED);
 
+		    			//notify socket of new connection
 		    			SockRequestResponse notif;
 	   					notif.type=WRITE;
 	   					notif.connection = c;
@@ -222,27 +279,26 @@ int main(int argc, char *argv[])
 		    			cerr << "\nCONNECTION ESTABLISHED\n";
 		    		}
 		    	}
-		    	else if (IS_FIN(client_flags)){
+		    	else if (IS_FIN(recv_flags)){
+		    		unsigned char flags = 0;
 			    	SET_ACK(flags);
-    				formatAndSendPacket(c, mux, flags, rand() % 1000, ack_num+1, win_size, 5, 0, empty);
+    				formatAndSendPacket(c, mux, flags, rand() % 1000, ack_num+1, connIter->state.rwnd, 5, 0, empty);
 			    }
 		    	else{
 		    		//resent SYN
 		    		cerr << "\nSomething Wrong, Resending SYN\n";
 		    		unsigned char flags = 0;
        	 			SET_SYN(flags);
-		    		formatAndSendPacket(c, mux, flags, connIter->state.GetLastSent() - 1, 0, win_size, 5, 0, empty);
+		    		formatAndSendPacket(c, mux, flags, connIter->state.GetLastSent() - 1, 0, connIter->state.rwnd, 5, 0, empty);
 		    	}
 		    	
 		    	break;
 		    }
 
 		    case ESTABLISHED: {
-		    	//resend our ack if we get a syn ack
-
 		    	//handle fin segment
-		    	if (IS_FIN(client_flags)){
-		    		cerr << "\nFIN RECEIVED\n";
+		    	if (IS_FIN(recv_flags)){
+		    		cerr << "\nFIN RECEIVED, going to close wait state\n";
 
 		    		//send ack and notify socket that we are closing connection
     				SET_ACK(flags);
@@ -251,19 +307,17 @@ int main(int argc, char *argv[])
     				Buffer empty_data;
 
     				SockRequestResponse closeNotify;
-	   				closeNotify.type= WRITE;
+	   				closeNotify.type = WRITE;
 	   				closeNotify.connection = c;
 	    			// buffer is zero bytes
 	    			closeNotify.data = empty_data;
 	    			closeNotify.bytes= 0;
 	    			closeNotify.error=EOK;
 
-	    			cerr << "\nACKING AND NOTIFYING SOCKET\n";
-
 	    			MinetSend(sock, closeNotify);
 	    			connIter->state.SetState(CLOSE_WAIT);
 		    	}
-		    	else if(IS_ACK(client_flags)){
+		    	else if(IS_ACK(recv_flags)){
 		    		cerr << "\nDATA RECEIVED\n";
 
 		    		unsigned short total_len;
@@ -275,23 +329,19 @@ int main(int argc, char *argv[])
     				unsigned char tcph_len;
     				tcph.GetHeaderLen(tcph_len);
 
-    				unsigned short len;
-    				//len = tcph_len - TCP_HEADER_BASE_LENGTH;
-    				len = total_len - ((iph_len + tcph_len) * 4);
-    				cerr << "This is the length: " << len;
+    				unsigned short len = total_len - ((iph_len + tcph_len) * 4);
+    				//cerr << "This is the length: " << len;
 
-			    	cerr << "\n\n\n" << p.GetPayload() << "\n\n\n";
+			    	//cerr << "\n\n\n" << p.GetPayload() << "\n\n\n";
 
-	    			cerr << "\nExpected: " << connIter->state.GetLastSent();
-	    			cerr << "\nLength of response: " << len;
+	    			//cerr << "\nExpected: " << connIter->state.GetLastSent();
+	    			//cerr << "\nLength of response: " << len;
 
     				//if this packet has data, send an ack
     				if (len > 0){
 	    				SET_ACK(flags);
 
 			    		//ack this packet if we expected it
-
-			    		cerr << "\nINCOMING SEQ NUM: " << ack_num << ", EXPECTED: " << connIter->state.GetLastRecvd() << "\n";
 			    		if (ack_num == connIter->state.GetLastRecvd()){
 			    			cerr << "\nRECEIVED IN ORDER PACKET\n";
 
@@ -310,7 +360,6 @@ int main(int argc, char *argv[])
 					    		EOK);
 
 			    			MinetSend(sock,write);
-			    			cerr << "\nWRITING DATA TO SOCKET\n";
 
 			    		}else{
 			    			cerr << "\nRECEIVED OUT OF ORDER PACKET, RESEND LAST PACKET ACKED\n";
@@ -327,13 +376,17 @@ int main(int argc, char *argv[])
     					cerr << "\n" << seq_num << " " << connIter->state.GetLastAcked() << " bytes removed from buffer" << "\n";
     					connIter->state.SendBuffer.Erase(0, seq_num - connIter->state.GetLastAcked());
     					connIter->state.SetLastAcked(seq_num+1);
+    					
+    					//reset timer
+    					if (connIter->state.GetLastAcked() == connIter->state.GetLastSent()){
+    						cerr << "\nTimeout off until we send another packet\n";
+    						connIter->bTmrActive = false;
+    					}else{
+    						cerr << "\nReset timeout\n";
+    						connIter->bTmrActive = true;
+    						connIter->timeout = TIMEOUT_LEN;
+    					}
     				}
-
-		    		
-
-		    	}
-		    	else{
-		    		cerr << "\nNEITHER ACK NOR FIN\n";
 		    	}
 		    	break;
 		    }
@@ -344,14 +397,10 @@ int main(int argc, char *argv[])
 		    	}
 		    	else{
 		    		cerr << "\nGot the wrong ack num, expected : " << connIter->state.GetLastSent() << ", but got: " << seq_num << "\n";
+		    		cerr << "Closing connection anyway\n";
+		    		connIter->state.SetState(CLOSE);
 		    	}
 		    	break;
-		    }
-		    case CLOSE_WAIT:{
-		    	cerr << "\nSENDING FIN TO REMOTE\n";
-		    	unsigned char flags;
-		    	SET_FIN(flags);
-    			formatAndSendPacket(c, mux, flags, seq_num, 0, win_size, 5, 0, empty);
 		    }
       	}
 
@@ -375,7 +424,7 @@ int main(int argc, char *argv[])
 
 	    		TCPState listenState(rand() % 1000, LISTEN, 3);
                 ConnectionToStateMapping<TCPState> listenMapping(s.connection, 0, listenState, false);
-                clist.push_back(listenMapping);   
+                c_list.push_back(listenMapping);   
 
 	    		cerr << "\nSENDING CONNECTION OK STATUS\n";
         		break;
@@ -398,17 +447,17 @@ int main(int argc, char *argv[])
 	    		MinetSend(sock,repl);
 
 	    		TCPState newState(seq_num + 1, SYN_SENT, 3);
-	    		newState.rwnd = 1000;
+	    		newState.rwnd = 500;
                 ConnectionToStateMapping<TCPState> newMapping(s.connection, 0, newState, false);
 
-                clist.push_back(newMapping);   
+                c_list.push_back(newMapping);   
                 cerr << "\nSent syn and added new connection\n";     
         		break;
         	}
         	case WRITE:{
         		cerr << "\nGot Write Request\n";
 
-        		ConnectionList<TCPState>::iterator connIter = clist.FindMatching(s.connection);
+        		ConnectionList<TCPState>::iterator connIter = c_list.FindMatching(s.connection);
 
 
         		cerr << connIter->state.GetState();
@@ -427,6 +476,19 @@ int main(int argc, char *argv[])
 
       				cerr << "\nBytes Sent: " << bytesSent;
 
+      				//respond to socket with number of bytes that we sent
+      				SockRequestResponse repl;
+	   				repl.type=STATUS;
+	    			// buffer is zero bytes
+	    			repl.bytes=bytesSent;
+	    			repl.error=EOK;
+	    			MinetSend(sock,repl);
+
+      				if (bytesSent <= 0){
+      					//if we can't send any data than no reason to send mesage
+      					break;
+      				}
+
         			// create the payload of the packet using the first n bytes of write request
 	   				connIter->state.SendBuffer.AddBack(s.data.ExtractFront(bytesSent));
 
@@ -436,14 +498,17 @@ int main(int argc, char *argv[])
 
         			formatAndSendPacket(s.connection, mux, flags, connIter->state.GetLastSent(), connIter->state.GetLastRecvd(), win_size, 5, bytesSent, connIter->state.SendBuffer);
         			connIter->state.SetLastSent(connIter->state.GetLastSent() + data_len);
-        			cerr << "\nSending Data\n";
 
-        			SockRequestResponse repl;
-	   				repl.type=STATUS;
-	    			// buffer is zero bytes
-	    			repl.bytes=bytesSent;
-	    			repl.error=EOK;
-	    			MinetSend(sock,repl);
+        			//start timer if we haven't already
+        			if (!(connIter->bTmrActive)){
+        				connIter->bTmrActive = true;
+        				connIter->timeout = TIMEOUT_LEN;
+
+        				//update minimum timeout value
+      					min_timeout = c_list.FindEarliest()->timeout;
+        			}
+
+        			cerr << "\nSending Data\n";
         		}
         		break;
         	}
@@ -451,15 +516,16 @@ int main(int argc, char *argv[])
         	case CLOSE:{
         		cerr << "\nSOCKET CLOSE REQUEST\n";
 
-        		ConnectionList<TCPState>::iterator connIter = clist.FindMatching(s.connection);
+        		ConnectionList<TCPState>::iterator connIter = c_list.FindMatching(s.connection);
 
         		switch(connIter->state.GetState()){
         			case CLOSE_WAIT: {
         				unsigned char flags = 0;
         				seq_num = rand() % 1000;
         				SET_FIN(flags);
+        				SET_ACK(flags);
 
-        				cerr << "\nSENDING FIN TO REMOTE\n";   
+        				cerr << "\nSENDING FIN TO REMOTE, moving to last ack state\n";   
     					formatAndSendPacket(s.connection, mux, flags, seq_num, 0, win_size, 5, 0, empty);
     					connIter->state.SetState(LAST_ACK);
     					connIter->state.SetLastSent(seq_num + 1);
@@ -470,12 +536,18 @@ int main(int argc, char *argv[])
     					unsigned char flags = 0;
     					seq_num = rand() % 1000;
     					SET_FIN(flags);
-
+    					SET_ACK(flags);
     					cerr << "\nSENDING FIN TO REMOTE\n";   
 						formatAndSendPacket(s.connection, mux, flags, seq_num, 0, win_size, 5, 0, empty);
 						connIter->state.SetState(FIN_WAIT1);
 						connIter->state.SetLastSent(seq_num + 1);
 						break;
+    				}
+
+    				case SYN_SENT:{
+    					//closing connection
+    					cerr << "\nClosing Connection\n";  
+    					connIter->state.SetState(CLOSED);
     				}
     			}
     		}
